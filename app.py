@@ -4,8 +4,9 @@ import os
 
 app = Flask(__name__)
 
-TELEGRAM_TOKEN = os.environ.get("8528949259:AAGoesAZiYJ6F99ParjqjYM_isqACiOcko4")
-TELEGRAM_CHAT_ID = os.environ.get("-1003715222874")
+TELEGRAM_TOKEN = os.environ.get("BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("CHAT_ID")
+
 
 def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
