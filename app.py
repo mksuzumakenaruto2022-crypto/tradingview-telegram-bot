@@ -143,7 +143,7 @@ enviar_mensagem(f"""
 ⏳ 10 segundos
 """)
 
-time.sleep(10)
+ time.sleep(10)
 
     enviar_mensagem(f"""
 <b>📊 SINAL INSTITUCIONAL IA</b>
