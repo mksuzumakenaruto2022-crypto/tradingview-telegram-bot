@@ -134,6 +134,7 @@ def webhook():
     stop = preco - (atr * ATR_MULT) if direcao=="COMPRA" else preco + (atr * ATR_MULT)
     take = preco + (atr * ATR_MULT * RR) if direcao=="COMPRA" else preco - (atr * ATR_MULT * RR)
 
+
 enviar_mensagem(f"""
 <b>⚠️ PREPARAR ENTRADA</b>
 📌 {ativo}
