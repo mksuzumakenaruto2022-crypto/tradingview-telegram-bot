@@ -62,5 +62,9 @@ def webhook():
 🛑 Stop: {round(stop,5)}
 """)
 
-    return {"status": "ok"}
+return {"status": "ok"}
+
+@app.route("/")
+def home():
+    return "Bot online 🚀"
 
