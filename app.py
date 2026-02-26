@@ -1,12 +1,14 @@
+import matplotlib
+matplotlib.use("Agg")
+
+import matplotlib.pyplot as plt
 from flask import Flask, request
 import requests
 import time
 import pandas as pd
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
-import matplotlib.pyplot as plt
 from datetime import datetime
-
 app = Flask(name)
 
 TOKEN = "8528949259:AAGoesAZiYJ6F99ParjqjYM_isqACiOcko4"
