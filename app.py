@@ -3,7 +3,7 @@ import time
 import requests
 from flask import Flask, request, jsonify
 
-app = Flask(_name_)
+app = Flask(__name__)
 
 # =============================
 # CONFIG (Render Environment)
