@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 
 from flask import Flask, request, jsonify
 
-app = Flask(_name_)
+app = Flask(__name__)
 
 # ====== CONFIG (Render -> Environment Variables) ======
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
