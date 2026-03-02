@@ -10,7 +10,7 @@ from flask import Flask, request, jsonify
 from zoneinfo import ZoneInfo
 from datetime import datetime
 
-app = Flask(_name_)
+app = Flask(__name__)
 
 # =========================
 # CONFIG (Render ENV VARS)
