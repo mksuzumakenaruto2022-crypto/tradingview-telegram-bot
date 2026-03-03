@@ -6,7 +6,6 @@ from typing import Any, Dict, Optional, Tuple, List
 
 import requests
 from flask import Flask, request, jsonify
-
 from zoneinfo import ZoneInfo
 from datetime import datetime
 
@@ -17,8 +16,7 @@ app = Flask(__name__)
 # =========================
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()  # senha forte
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()  # opcional (recomendado)
 
 ENABLE_EMOJIS = os.getenv("ENABLE_EMOJIS", "1").strip() == "1"
 LANG_STYLE = os.getenv("LANG_STYLE", "pro").strip().lower()
@@ -35,7 +33,7 @@ SEND_IGNORED_NOTICE = os.getenv("SEND_IGNORED_NOTICE", "0").strip() == "1"
 # ===== Filtro de dias avançado =====
 ALLOW_WEEKENDS = os.getenv("ALLOW_WEEKENDS", "0").strip() == "1"
 BLOCK_FRIDAY_AFTER = os.getenv("BLOCK_FRIDAY_AFTER", "17:00").strip()  # HH:MM
-ALLOW_SUNDAY_AFTER = os.getenv("ALLOW_SUNDAY_AFTER", "").strip()       # HH:MM (opcional)
+ALLOW_SUNDAY_AFTER = os.getenv("ALLOW_SUNDAY_AFTER", "").strip()  # HH:MM (opcional)
 
 # ===== Admin (comandos Telegram) =====
 ADMIN_TELEGRAM_IDS = os.getenv("ADMIN_TELEGRAM_IDS", "").strip()  # "123,456"
@@ -53,14 +51,18 @@ PAUSED = START_PAUSED
 # =========================
 _TZ = ZoneInfo(TIMEZONE_NAME)
 
+
 def _now_ts() -> int:
     return int(time.time())
+
 
 def _sha1(s: str) -> str:
     return hashlib.sha1(s.encode("utf-8")).hexdigest()
 
+
 def _emoji(on: str, off: str = "") -> str:
     return on if ENABLE_EMOJIS else off
+
 
 def _normalize_direction(d: str) -> str:
     d = (d or "").strip().upper()
@@ -69,6 +71,7 @@ def _normalize_direction(d: str) -> str:
     if d in ["PUT", "SELL", "VENDA", "DOWN"]:
         return "PUT"
     return d or "CALL"
+
 
 def _telegram_send_message(text: str, chat_id: Optional[str] = None) -> Tuple[bool, str]:
     if not TELEGRAM_BOT_TOKEN:
@@ -83,6 +86,7 @@ def _telegram_send_message(text: str, chat_id: Optional[str] = None) -> Tuple[bo
         "parse_mode": "HTML",
         "disable_web_page_preview": True,
     }
+
     try:
         r = requests.post(url, json=payload, timeout=15)
         if r.status_code >= 300:
@@ -91,22 +95,29 @@ def _telegram_send_message(text: str, chat_id: Optional[str] = None) -> Tuple[bo
     except Exception as e:
         return False, str(e)
 
+
 def _require_secret_from_tradingview(payload: Dict[str, Any]) -> Optional[Tuple[Dict[str, Any], int]]:
+    # Se não setou secret no Render, não valida.
     if not WEBHOOK_SECRET:
         return None
+
     secret = str(payload.get("secret", "")).strip()
     if secret == WEBHOOK_SECRET:
         return None
-    # também aceita header (caso você use futuramente)
+
+    # também aceita header (se você quiser usar no futuro)
     header_secret = request.headers.get("X-WEBHOOK-SECRET", "").strip()
     if header_secret == WEBHOOK_SECRET:
         return None
+
     return {"status": "error", "message": "Secret inválido (WEBHOOK_SECRET)."}, 401
+
 
 def _parse_payload() -> Dict[str, Any]:
     data = request.get_json(silent=True)
     if isinstance(data, dict):
         return data
+
     raw = (request.data or b"").decode("utf-8", errors="ignore").strip()
     if raw:
         try:
@@ -116,10 +127,11 @@ def _parse_payload() -> Dict[str, Any]:
             end = raw.rfind("}")
             if start != -1 and end != -1 and end > start:
                 try:
-                    return json.loads(raw[start:end+1])
+                    return json.loads(raw[start:end + 1])
                 except Exception:
                     pass
     return {}
+
 
 def _parse_windows(s: str) -> List[Tuple[int, int]]:
     windows = []
@@ -133,7 +145,9 @@ def _parse_windows(s: str) -> List[Tuple[int, int]]:
         windows.append((sh * 60 + sm, eh * 60 + em))
     return windows
 
+
 _WINDOWS = _parse_windows(TRADING_WINDOWS)
+
 
 def _hhmm_to_minutes(hhmm: str) -> Optional[int]:
     if not hhmm:
@@ -144,45 +158,51 @@ def _hhmm_to_minutes(hhmm: str) -> Optional[int]:
     except Exception:
         return None
 
+
 _FRIDAY_CUTOFF = _hhmm_to_minutes(BLOCK_FRIDAY_AFTER)
 _SUNDAY_ALLOW = _hhmm_to_minutes(ALLOW_SUNDAY_AFTER)
 
+
 def _in_trading_window(now: datetime) -> bool:
-    # 1) pausa manual
+    global PAUSED
+
     if PAUSED:
         return False
 
     wd = now.weekday()  # 0 seg ... 4 sex ... 5 sab ... 6 dom
     cur = now.hour * 60 + now.minute
 
-    # 2) fim de semana
+    # fim de semana
     if not ALLOW_WEEKENDS:
-        # sábado bloqueado sempre
         if wd == 5:
             return False
-        # domingo: pode liberar depois de um horário
         if wd == 6:
             if _SUNDAY_ALLOW is None:
                 return False
             if cur < _SUNDAY_ALLOW:
                 return False
 
-    # 3) sexta após horário de corte
+    # sexta após horário de corte
     if wd == 4 and _FRIDAY_CUTOFF is not None:
         if cur >= _FRIDAY_CUTOFF:
             return False
 
-    # 4) janelas do dia
+    # janelas do dia
+    if not _WINDOWS:
+        return True  # se não houver janelas configuradas, libera geral
+
     for start, end in _WINDOWS:
         if start <= cur <= end:
             return True
+
     return False
+
 
 def _format_pro_message(p: Dict[str, Any]) -> str:
     ativo = str(p.get("ativo", p.get("symbol", "EURUSD"))).upper()
     direcao = _normalize_direction(str(p.get("acao", p.get("direcao", "CALL"))))
     tf = str(p.get("timeframe", p.get("tempo", "1"))).strip()
-    preco = p.get("preco", p.get("price", 0))
+    preco = p.get("preco", p.get("price", ""))
     strategy = str(p.get("strategy", p.get("estrategia", "Zmaximus PRO"))).strip()
     countdown = int(p.get("countdown", DEFAULT_COUNTDOWN))
     broker = str(p.get("broker", p.get("corretora", "IQ Option / Exnova / Quotex"))).strip()
@@ -228,8 +248,10 @@ def _format_pro_message(p: Dict[str, Any]) -> str:
         f"{bloco_conf}{bloco_check}\n\n{linha6}{rodape}"
     )
 
+
 def _is_duplicate(p: Dict[str, Any]) -> bool:
     global _last_signal_hash, _last_signal_ts
+
     core = {
         "ativo": str(p.get("ativo", p.get("symbol", ""))).upper(),
         "dir": _normalize_direction(str(p.get("acao", p.get("direcao", "")))),
@@ -238,6 +260,7 @@ def _is_duplicate(p: Dict[str, Any]) -> bool:
         "strategy": str(p.get("strategy", p.get("estrategia", ""))),
         "conf": str(p.get("conf", "")),
     }
+
     h = _sha1(json.dumps(core, sort_keys=True))
     now = _now_ts()
 
@@ -250,6 +273,7 @@ def _is_duplicate(p: Dict[str, Any]) -> bool:
     _last_signal_ts = now
     return False
 
+
 def _admin_ids() -> List[int]:
     ids = []
     for part in ADMIN_TELEGRAM_IDS.split(","):
@@ -261,6 +285,7 @@ def _admin_ids() -> List[int]:
         except Exception:
             pass
     return ids
+
 
 def _is_admin(user_id: Optional[int]) -> bool:
     if user_id is None:
@@ -276,9 +301,26 @@ def _is_admin(user_id: Optional[int]) -> bool:
 def home():
     return "Bot Online ✅"
 
+
 @app.get("/health")
 def health():
     return jsonify({"status": "ok"}), 200
+
+
+@app.get("/debug")
+def debug():
+    now = datetime.now(_TZ)
+    return jsonify({
+        "paused": PAUSED,
+        "now": now.strftime("%d/%m/%Y %H:%M:%S"),
+        "timezone": TIMEZONE_NAME,
+        "trading_windows": TRADING_WINDOWS,
+        "in_window_now": _in_trading_window(now),
+        "has_token": bool(TELEGRAM_BOT_TOKEN),
+        "has_chat_id": bool(TELEGRAM_CHAT_ID),
+        "secret_enabled": bool(WEBHOOK_SECRET),
+    }), 200
+
 
 @app.post("/webhook")
 def webhook():
@@ -291,15 +333,14 @@ def webhook():
         return jsonify(sec[0]), sec[1]
 
     now = datetime.now(_TZ)
+
     if not _in_trading_window(now):
         if SEND_IGNORED_NOTICE:
             msg = (
-                f"{_emoji('⛔')} <b>SINAL IGNORADO</b>\n"
+                f"{_emoji('⛔️')} <b>SINAL IGNORADO</b>\n"
                 f"• Motivo: fora do horário / pausado\n"
                 f"🕒 <i>{now.strftime('%d/%m %H:%M:%S')}</i>\n"
-                f"⏱ Janelas: <b>{TRADING_WINDOWS}</b>\n"
-                f"📅 Regra: <b>sex após {BLOCK_FRIDAY_AFTER} bloqueia</b>\n"
-                f"{'📅 Domingo libera após ' + ALLOW_SUNDAY_AFTER if ALLOW_SUNDAY_AFTER else '📅 Domingo bloqueado'}\n\n"
+                f"⏱️ Janelas: <b>{TRADING_WINDOWS}</b>\n\n"
                 f"<b>{SIGNATURE}</b>"
             )
             _telegram_send_message(msg)
@@ -310,9 +351,12 @@ def webhook():
 
     msg = _format_pro_message(payload)
     ok, info = _telegram_send_message(msg)
+
     if not ok:
-        return jsonify({"status": "error", "message": info}), 500
+        return jsonify({"status": "error", "message": info, "payload_keys": list(payload.keys())}), 500
+
     return jsonify({"status": "ok"}), 200
+
 
 @app.post("/telegram")
 def telegram_webhook():
@@ -325,20 +369,18 @@ def telegram_webhook():
     update = request.get_json(silent=True) or {}
     message = update.get("message") or update.get("edited_message") or {}
     text = (message.get("text") or "").strip()
+
     chat = message.get("chat") or {}
     from_user = message.get("from") or {}
-
     chat_id = chat.get("id")
     user_id = from_user.get("id")
 
     if not text:
         return jsonify({"ok": True})
 
-    # somente admin
     if not _is_admin(user_id):
-        # responde no privado do usuário (se possível)
         if chat_id:
-            _telegram_send_message("⛔ Você não tem permissão para esse comando.", str(chat_id))
+            _telegram_send_message("⛔️ Você não tem permissão para esse comando.", str(chat_id))
         return jsonify({"ok": True})
 
     cmd = text.split()[0].lower()
@@ -346,13 +388,15 @@ def telegram_webhook():
     if cmd == "/pause":
         PAUSED = True
         _telegram_send_message("⏸️ <b>Sinais PAUSADOS</b>\nUse /resume para voltar.", str(chat_id))
+
     elif cmd == "/resume":
         PAUSED = False
         _telegram_send_message("▶️ <b>Sinais ATIVADOS</b>\nBot voltou a operar.", str(chat_id))
+
     elif cmd == "/status":
         now = datetime.now(_TZ)
         status = "PAUSADO ⏸️" if PAUSED else "ATIVO ▶️"
-        allowed = "SIM ✅" if _in_trading_window(now) else "NÃO ⛔"
+        allowed = "SIM ✅" if _in_trading_window(now) else "NÃO ⛔️"
         msg = (
             f"📡 <b>Status do Bot</b>\n\n"
             f"• Estado: <b>{status}</b>\n"
@@ -364,6 +408,7 @@ def telegram_webhook():
             f"<b>{SIGNATURE}</b>"
         )
         _telegram_send_message(msg, str(chat_id))
+
     else:
         _telegram_send_message("Comandos: /pause | /resume | /status", str(chat_id))
 
