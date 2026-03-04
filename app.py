@@ -56,7 +56,8 @@ STOP_AFTER_CONSEC_LOSSES = int(os.getenv("STOP_AFTER_CONSEC_LOSSES", "3"))    # 
 ABSENT_SCORE_MIN = int(os.getenv("ABSENT_SCORE_MIN", "80"))  # só premium
 
 # admins
-ADMIN_TELEGRAM_IDS = os.getenv("ADMIN_TELEGRAM_IDS", "").strip()  # "123,456"
+_admin_raw = os.getenv("ADMIN_TELEGRAM_IDS", "").strip()
+ADMIN_TELEGRAM_IDS = {x.strip() for x in _admin_raw.split(",") if x.strip()}  # "123,456"
 
 # =========================
 # TIMEZONE
