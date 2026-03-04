@@ -3,13 +3,17 @@ import time
 import json
 import hashlib
 import threading
-from queue import Queue, Empty
+from queue import Queue
 from typing import Any, Dict, Optional, Tuple, List
 
 import requests
 from flask import Flask, request, jsonify
-from zoneinfo import ZoneInfo
 from datetime import datetime, timedelta
+
+try:
+    from zoneinfo import ZoneInfo
+except Exception:
+    ZoneInfo = None  # fallback
 
 app = Flask(__name__)
 
@@ -33,10 +37,10 @@ SEND_IGNORED_NOTICE = os.getenv("SEND_IGNORED_NOTICE", "0").strip() == "1"
 
 # ===== Filtro de notícias =====
 NEWS_FILTER_ENABLED = os.getenv("NEWS_FILTER_ENABLED", "0").strip() == "1"
-NEWS_SOURCE = os.getenv("NEWS_SOURCE", "faireconomy").strip().lower()  # "faireconomy"
-NEWS_IMPACTS = os.getenv("NEWS_IMPACTS", "high").strip().lower()       # "high,medium"
-NEWS_LOOKAHEAD_MIN = int(os.getenv("NEWS_LOOKAHEAD_MIN", "30"))        # minutos antes
-NEWS_COOLDOWN_AFTER_MIN = int(os.getenv("NEWS_COOLDOWN_AFTER_MIN", "15"))  # depois
+NEWS_SOURCE = os.getenv("NEWS_SOURCE", "faireconomy").strip().lower()
+NEWS_IMPACTS = os.getenv("NEWS_IMPACTS", "high").strip().lower()
+NEWS_LOOKAHEAD_MIN = int(os.getenv("NEWS_LOOKAHEAD_MIN", "30"))
+NEWS_COOLDOWN_AFTER_MIN = int(os.getenv("NEWS_COOLDOWN_AFTER_MIN", "15"))
 NEWS_CACHE_SECONDS = int(os.getenv("NEWS_CACHE_SECONDS", "300"))
 
 # =========================
@@ -45,7 +49,15 @@ NEWS_CACHE_SECONDS = int(os.getenv("NEWS_CACHE_SECONDS", "300"))
 _last_signal_hash = None
 _last_signal_ts = 0
 
-_TZ = ZoneInfo(TIMEZONE_NAME)
+def _get_tz():
+    if ZoneInfo is None:
+        return None
+    try:
+        return ZoneInfo(TIMEZONE_NAME)
+    except Exception:
+        return ZoneInfo("UTC")
+
+_TZ = _get_tz()
 
 # =========================
 # Async queue (anti-timeout)
@@ -57,8 +69,8 @@ def _worker():
         try:
             text, chat_id = _send_queue.get()
             _telegram_send_message(text, chat_id)
-        except Exception:
-            pass
+        except Exception as e:
+            print("[WORKER] erro ao enviar telegram:", repr(e), flush=True)
         finally:
             try:
                 _send_queue.task_done()
@@ -71,8 +83,7 @@ def _enqueue_telegram(text: str, chat_id: Optional[str] = None) -> None:
     try:
         _send_queue.put_nowait((text, chat_id))
     except Exception:
-        # fila cheia -> melhor descartar do que travar webhook
-        pass
+        print("[QUEUE] fila cheia, descartando msg", flush=True)
 
 # =========================
 # Helpers
@@ -110,21 +121,33 @@ def _telegram_send_message(text: str, chat_id: Optional[str] = None) -> Tuple[bo
     try:
         r = requests.post(url, json=payload, timeout=10)
         if r.status_code >= 300:
+            print("[TELEGRAM] erro:", r.status_code, r.text[:300], flush=True)
             return False, f"Telegram erro {r.status_code}: {r.text}"
         return True, "ok"
     except Exception as e:
+        print("[TELEGRAM] exception:", repr(e), flush=True)
         return False, str(e)
 
 def _parse_payload() -> Dict[str, Any]:
+    # 1) JSON normal
     data = request.get_json(silent=True)
     if isinstance(data, dict):
         return data
+
+    # 2) raw body
     raw = (request.data or b"").decode("utf-8", errors="ignore").strip()
     if raw:
         try:
-            return json.loads(raw)
+            j = json.loads(raw)
+            if isinstance(j, dict):
+                return j
         except Exception:
             pass
+
+    # 3) form-urlencoded (raríssimo, mas acontece)
+    if request.form:
+        return dict(request.form)
+
     return {}
 
 def _require_secret(payload: Dict[str, Any]) -> Optional[Tuple[Dict[str, Any], int]]:
@@ -137,19 +160,29 @@ def _require_secret(payload: Dict[str, Any]) -> Optional[Tuple[Dict[str, Any], i
 
 def _parse_windows(s: str) -> List[Tuple[int, int]]:
     windows = []
-    parts = [p.strip() for p in s.split(",") if p.strip()]
+    parts = [p.strip() for p in (s or "").split(",") if p.strip()]
     for p in parts:
         if "-" not in p:
             continue
         a, b = [x.strip() for x in p.split("-", 1)]
-        sh, sm = [int(x) for x in a.split(":")]
-        eh, em = [int(x) for x in b.split(":")]
-        windows.append((sh * 60 + sm, eh * 60 + em))
+        try:
+            sh, sm = [int(x) for x in a.split(":")]
+            eh, em = [int(x) for x in b.split(":")]
+            windows.append((sh * 60 + sm, eh * 60 + em))
+        except Exception:
+            continue
     return windows
 
 _WINDOWS = _parse_windows(TRADING_WINDOWS)
 
+def _now_local() -> datetime:
+    if _TZ is None:
+        return datetime.utcnow()
+    return datetime.now(_TZ)
+
 def _in_trading_window(now: datetime) -> bool:
+    if not _WINDOWS:
+        return True
     cur = now.hour * 60 + now.minute
     for start, end in _WINDOWS:
         if start <= cur <= end:
@@ -175,7 +208,6 @@ def _is_duplicate(p: Dict[str, Any]) -> bool:
 
 def _symbol_to_currencies(symbol: str) -> List[str]:
     s = (symbol or "").upper().replace("FX:", "").replace("/", "")
-    # EURUSD -> ["EUR","USD"]
     if len(s) >= 6:
         return [s[0:3], s[3:6]]
     return []
@@ -192,16 +224,19 @@ def _get_news_events() -> List[Dict[str, Any]]:
     if _news_cache_data and (now - _news_cache_ts) < NEWS_CACHE_SECONDS:
         return _news_cache_data
 
-    if NEWS_SOURCE == "faireconomy":
-        # Fonte pública bastante usada (ForexFactory calendar mirror)
-        url = "https://cdn-nfs.faireconomy.media/ff_calendar_thisweek.json"
-        r = requests.get(url, timeout=10)
-        r.raise_for_status()
-        data = r.json()
-        if isinstance(data, list):
-            _news_cache_data = data
-            _news_cache_ts = now
-            return data
+    try:
+        if NEWS_SOURCE == "faireconomy":
+            url = "https://cdn-nfs.faireconomy.media/ff_calendar_thisweek.json"
+            r = requests.get(url, timeout=10)
+            r.raise_for_status()
+            data = r.json()
+            if isinstance(data, list):
+                _news_cache_data = data
+                _news_cache_ts = now
+                return data
+    except Exception as e:
+        # MUITO IMPORTANTE: não deixar isso derrubar o webhook
+        print("[NEWS] falhou buscar noticias:", repr(e), flush=True)
 
     _news_cache_data = []
     _news_cache_ts = now
@@ -223,7 +258,6 @@ def _has_high_impact_news(now: datetime, symbol: str) -> Tuple[bool, str]:
     if not events:
         return False, ""
 
-    # janela de bloqueio
     start = now - timedelta(minutes=NEWS_LOOKAHEAD_MIN)
     end = now + timedelta(minutes=NEWS_COOLDOWN_AFTER_MIN)
 
@@ -236,11 +270,15 @@ def _has_high_impact_news(now: datetime, symbol: str) -> Tuple[bool, str]:
             if not _impact_ok(impact):
                 continue
 
-            # timestamps do feed costumam vir em unix (segundos)
             ts = ev.get("timestamp")
             if ts is None:
                 continue
-            ev_dt = datetime.fromtimestamp(int(ts), tz=_TZ)
+
+            # timestamp normalmente é unix (segundos)
+            if _TZ is None:
+                ev_dt = datetime.utcfromtimestamp(int(ts))
+            else:
+                ev_dt = datetime.fromtimestamp(int(ts), tz=_TZ)
 
             if start <= ev_dt <= end:
                 title = str(ev.get("title", "Notícia econômica")).strip()
@@ -260,7 +298,7 @@ def _format_pro_message(p: Dict[str, Any]) -> str:
     countdown = int(p.get("countdown", DEFAULT_COUNTDOWN))
     broker = str(p.get("broker", p.get("corretora", "IQ Option / Exnova / Quotex"))).strip()
 
-    ts = datetime.now(_TZ).strftime("%d/%m %H:%M:%S")
+    ts = _now_local().strftime("%d/%m %H:%M:%S")
 
     titulo = f"{_emoji('📌')} <b>SINAL PRO (Renko + Continuidade)</b>"
     linha1 = f"{_emoji('💱')} <b>Ativo:</b> {ativo}  |  <b>TF:</b> {tf}m"
@@ -278,27 +316,26 @@ def _format_pro_message(p: Dict[str, Any]) -> str:
     )
 
 # =========================
-# ROUTES
+# SAFETY: evitar 500
 # =========================
-@app.get("/")
-def home():
-    return "Bot Online ✅"
+@app.errorhandler(Exception)
+def handle_exception(e):
+    print("[ERROR] exception:", repr(e), flush=True)
+    # TradingView odeia 500 -> devolve 200 com status error e logamos no Render
+    return jsonify({"status": "error", "message": "internal_error"}), 200
 
-@app.get("/health")
-def health():
-    return jsonify({"status": "ok"}), 200
-
-@app.post("/webhook")
-def webhook():
+def _handle_webhook() -> Tuple[Dict[str, Any], int]:
     payload = _parse_payload()
+    print("[WEBHOOK] recebido:", payload if payload else "(vazio)", flush=True)
+
     if not payload:
-        return jsonify({"status": "error", "message": "Payload vazio/ inválido."}), 400
+        return {"status": "error", "message": "Payload vazio/ inválido."}, 200
 
     sec = _require_secret(payload)
     if sec:
-        return jsonify(sec[0]), sec[1]
+        return sec[0], 401
 
-    now = datetime.now(_TZ)
+    now = _now_local()
 
     # 1) filtro de horário
     if not _in_trading_window(now):
@@ -310,7 +347,7 @@ def webhook():
                 f"⏱️ Janelas: <b>{TRADING_WINDOWS}</b>\n\n"
                 f"<b>{SIGNATURE}</b>"
             )
-        return jsonify({"status": "ignored", "message": "blocked_by_time"}), 200
+        return {"status": "ignored", "message": "blocked_by_time"}, 200
 
     # 2) filtro de notícias
     symbol = str(payload.get("ativo", payload.get("symbol", ""))).upper()
@@ -323,19 +360,45 @@ def webhook():
                 f"Evento: <b>{reason}</b>\n\n"
                 f"<b>{SIGNATURE}</b>"
             )
-        return jsonify({"status": "ignored", "message": "blocked_by_news", "reason": reason}), 200
+        return {"status": "ignored", "message": "blocked_by_news", "reason": reason}, 200
 
     # 3) anti-spam
     if _is_duplicate(payload):
-        return jsonify({"status": "ignored", "message": "duplicate"}), 200
+        return {"status": "ignored", "message": "duplicate"}, 200
 
     # 4) monta mensagem
     msg = _format_pro_message(payload)
 
-    # 5) IMPORTANTÍSSIMO: responde logo pro TradingView
+    # 5) responde rápido
     _enqueue_telegram(msg)
+    return {"status": "ok"}, 200
+
+# =========================
+# ROUTES
+# =========================
+@app.get("/")
+def home():
+    return "Bot Online ✅"
+
+# IMPORTANTE: aceitar POST em "/" também (muita gente coloca a URL errada no TradingView)
+@app.post("/")
+def webhook_root():
+    data, code = _handle_webhook()
+    return jsonify(data), code
+
+@app.get("/health")
+def health():
     return jsonify({"status": "ok"}), 200
 
+@app.post("/webhook")
+def webhook():
+    data, code = _handle_webhook()
+    return jsonify(data), code
 
+# alias extra (se você preferir usar /tv no TradingView)
+@app.post("/tv")
+def tv():
+    data, code = _handle_webhook()
+    return jsonify(data), code
 
 
