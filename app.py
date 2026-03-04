@@ -448,7 +448,10 @@ def home():
 @app.get("/health")
 def health():
     return jsonify({"status": "ok"}), 200
-
+@app.post("/telegram")
+def webhook_telegram():
+    data, code = _handle_webhook()
+    return jsonify(data), code
 # aceitar POST em / também (evita erro de URL no TV)
 @app.post("/")
 def webhook_root():
