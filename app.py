@@ -97,21 +97,24 @@ def _telegram_send_message(text: str, chat_id: Optional[str] = None) -> Tuple[bo
         "parse_mode": "HTML",
         "disable_web_page_preview": True,
     }
+
     try:
-        r = requests.post(url, json=payload, timeout=10)
+        r = requests.post(url, json=payload, timeout=15)
         if r.status_code >= 300:
             return False, f"Telegram erro {r.status_code}: {r.text}"
         return True, "ok"
     except Exception as e:
         return False, str(e)
 
+# ✅ WORKER COM LOG (pra você ver o erro real)
 def _worker():
     while True:
         try:
             text, chat_id = _send_queue.get()
-            _telegram_send_message(text, chat_id)
-        except Exception:
-            pass
+            ok, msg = _telegram_send_message(text, chat_id)
+            print(f"[TG SEND] ok={ok} chat_id={chat_id} msg={msg}", flush=True)
+        except Exception as e:
+            print(f"[TG SEND ERROR] {e}", flush=True)
         finally:
             try:
                 _send_queue.task_done()
@@ -124,7 +127,7 @@ def _enqueue_telegram(text: str, chat_id: Optional[str] = None) -> None:
     try:
         _send_queue.put_nowait((text, chat_id))
     except Exception:
-        pass
+        print("[QUEUE FULL] não foi possível enfileirar mensagem", flush=True)
 
 # =========================
 # HELPERS
@@ -285,7 +288,7 @@ def _profit_on_win(stake: float) -> float:
 
 def _format_status(now: datetime) -> str:
     mode = "AUSENTE ✅" if ABSENT_MODE else "NORMAL ▶️"
-    paused, why = _is_paused(now)
+    paused, _ = _is_paused(now)
     ptxt = "SIM ⛔" if paused else "NÃO ✅"
     target = daily_target if daily_target is not None else 0
     return (
@@ -435,13 +438,27 @@ def home():
 def health():
     return jsonify({"status": "ok"}), 200
 
-# ✅ TradingView webhook (use este no Telegram setWebhook? NÃO — aqui é TradingView)
+@app.get("/debug/env")
+def debug_env():
+    # não expor token inteiro
+    tok = TELEGRAM_BOT_TOKEN
+    masked = (tok[:8] + "..." + tok[-4:]) if tok else ""
+    return jsonify({
+        "TELEGRAM_BOT_TOKEN_set": bool(TELEGRAM_BOT_TOKEN),
+        "TELEGRAM_BOT_TOKEN_masked": masked,
+        "TELEGRAM_CHAT_ID": TELEGRAM_CHAT_ID,
+        "ADMIN_TELEGRAM_IDS": ADMIN_TELEGRAM_IDS_RAW,
+        "WEBHOOK_SECRET_set": bool(WEBHOOK_SECRET),
+        "TIMEZONE": TIMEZONE_NAME,
+    }), 200
+
+# ✅ TradingView webhook
 @app.post("/tv")
 def tv():
     data, code = _handle_tv_webhook()
     return jsonify(data), code
 
-# (opcionais para compatibilidade)
+# compat
 @app.post("/webhook")
 def webhook():
     data, code = _handle_tv_webhook()
@@ -451,6 +468,22 @@ def webhook():
 def webhook_root():
     data, code = _handle_tv_webhook()
     return jsonify(data), code
+
+# =========================
+# TEST ROUTES (pra você ver erro real)
+# =========================
+@app.get("/test-send")
+def test_send():
+    _enqueue_telegram("✅ TESTE: enviando para TELEGRAM_CHAT_ID (canal) ...")
+    return jsonify({"ok": True, "sent_to": TELEGRAM_CHAT_ID}), 200
+
+@app.get("/test-me")
+def test_me():
+    chat_id = request.args.get("chat_id", "").strip()
+    if not chat_id:
+        return jsonify({"ok": False, "error": "Passe ?chat_id=SEU_CHAT_ID"}), 400
+    _enqueue_telegram("✅ TESTE: enviando para seu privado (chat_id informado) ...", chat_id)
+    return jsonify({"ok": True, "sent_to": chat_id}), 200
 
 # =========================
 # TELEGRAM WEBHOOK (commands)  ✅ ESTE é o /telegram
@@ -469,6 +502,9 @@ def telegram_webhook():
 
     chat_id = chat.get("id")
     user_id = from_user.get("id")
+
+    # ✅ LOG do update recebido
+    print(f"[TG IN] chat_id={chat_id} user_id={user_id} text={text}", flush=True)
 
     if not text:
         return jsonify({"ok": True})
@@ -529,5 +565,4 @@ def telegram_webhook():
         _enqueue_telegram("Comandos: /start /status /ausente_on /ausente_off /pause /resume /win /loss /meta", str(chat_id))
 
     return jsonify({"ok": True})
-
 
