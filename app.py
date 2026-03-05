@@ -437,15 +437,7 @@ def home():
 @app.get("/health")
 def health():
     return jsonify({"status": "ok"}), 200
-@app.get("/test-send")
-def test_send():
-    ok, msg = _telegram_send_message("✅ TESTE OK — Render conseguiu falar com o Telegram.")
-    return jsonify({
-        "ok": ok,
-        "telegram_result": msg,
-        "chat_id": TELEGRAM_CHAT_ID,
-        "token_set": bool(TELEGRAM_BOT_TOKEN),
-    }), (200 if ok else 500)
+
 @app.get("/debug/env")
 def debug_env():
     # não expor token inteiro
