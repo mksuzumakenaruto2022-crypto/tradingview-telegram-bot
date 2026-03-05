@@ -474,8 +474,12 @@ def webhook_root():
 # =========================
 @app.get("/test-send")
 def test_send():
-    _enqueue_telegram("✅ TESTE: enviando para TELEGRAM_CHAT_ID (canal) ...")
-    return jsonify({"ok": True, "sent_to": TELEGRAM_CHAT_ID}), 200
+    ok, msg = _telegram_send_message("✅ TESTE DIRETO — mensagem enviada sem fila.")
+    return jsonify({
+        "ok": ok,
+        "telegram_result": msg,
+        "chat_id": TELEGRAM_CHAT_ID
+    }), (200 if ok else 500)
 
 @app.get("/test-me")
 def test_me():
