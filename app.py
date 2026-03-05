@@ -5,7 +5,7 @@ import hashlib
 import threading
 from queue import Queue
 from typing import Any, Dict, Optional, Tuple, List
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import requests
 from flask import Flask, request, jsonify
@@ -22,6 +22,8 @@ app = Flask(__name__)
 # =========================
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+
+# ✅ Secret só para TradingView (não para Telegram)
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 
 TIMEZONE_NAME = os.getenv("TIMEZONE", "America/Sao_Paulo").strip()
@@ -55,9 +57,9 @@ STOP_AFTER_CONSEC_LOSSES = int(os.getenv("STOP_AFTER_CONSEC_LOSSES", "3"))    # 
 # modo ausente (manda menos sinais)
 ABSENT_SCORE_MIN = int(os.getenv("ABSENT_SCORE_MIN", "80"))  # só premium
 
-# admins
-_admin_raw = os.getenv("ADMIN_TELEGRAM_IDS", "").strip()
-ADMIN_TELEGRAM_IDS = {x.strip() for x in _admin_raw.split(",") if x.strip()}  # "123,456"
+# ✅ admins (string bruta + parsing certo)
+ADMIN_TELEGRAM_IDS_RAW = os.getenv("ADMIN_TELEGRAM_IDS", "").strip()
+
 
 # =========================
 # TIMEZONE
@@ -163,7 +165,8 @@ def _parse_payload() -> Dict[str, Any]:
         return dict(request.form)
     return {}
 
-def _require_secret(payload: Dict[str, Any]) -> Optional[Tuple[Dict[str, Any], int]]:
+def _require_secret_for_tv(payload: Dict[str, Any]) -> Optional[Tuple[Dict[str, Any], int]]:
+    """✅ Secret só para TradingView."""
     if not WEBHOOK_SECRET:
         return None
     secret = str(payload.get("secret", "")).strip()
@@ -205,7 +208,7 @@ def _is_duplicate(p: Dict[str, Any]) -> bool:
         "tf": str(p.get("timeframe", p.get("tempo", ""))),
         "preco": str(p.get("preco", p.get("price", ""))),
         "strategy": str(p.get("strategy", p.get("estrategia", ""))),
-        "score": str(p.get("score", p.get("conf", ""))),  # opcional
+        "score": str(p.get("score", p.get("conf", ""))),
     }
     h = _sha1(json.dumps(core, sort_keys=True))
     now = _now_ts()
@@ -217,7 +220,8 @@ def _is_duplicate(p: Dict[str, Any]) -> bool:
 
 def _admin_ids() -> List[int]:
     ids = []
-    for part in ADMIN_TELEGRAM_IDS.split(","):
+    raw = ADMIN_TELEGRAM_IDS_RAW
+    for part in raw.split(","):
         part = part.strip()
         if not part:
             continue
@@ -239,13 +243,12 @@ def _is_admin(user_id: Optional[int]) -> bool:
 PAUSED = False
 ABSENT_MODE = False  # modo ausente (só premium)
 
-# PnL diário estimado + controle
 _day_key = None
 profit_est = 0.0
 wins = 0
 losses = 0
 consec_losses = 0
-daily_target = None  # meta sorteada por dia (entre 50 e 100)
+daily_target = None
 current_mg_step = 0
 last_stake = BASE_STAKE
 pause_until_ts = 0
@@ -262,7 +265,6 @@ def _reset_day_if_needed(now: datetime):
         current_mg_step = 0
         last_stake = BASE_STAKE
         pause_until_ts = 0
-        # meta variável do dia: 50–100
         import random
         daily_target = float(random.randint(int(TARGET_MIN), int(TARGET_MAX)))
 
@@ -278,7 +280,6 @@ def _set_temp_pause(minutes: int):
     pause_until_ts = _now_ts() + int(minutes * 60)
 
 def _profit_on_win(stake: float) -> float:
-    # lucro estimado com payout médio
     payout_mid = (PAYOUT_MIN + PAYOUT_MAX) / 2.0
     return stake * payout_mid
 
@@ -303,7 +304,6 @@ def _format_status(now: datetime) -> str:
     )
 
 def _suggest_stake(score: Optional[float]) -> float:
-    # Premium se score >= 80 (ou se não tiver score, usa base)
     if score is not None and score >= 80:
         return PREMIUM_STAKE
     return BASE_STAKE
@@ -312,14 +312,12 @@ def _format_signal(p: Dict[str, Any], stake: float, score: Optional[float]) -> s
     ativo = str(p.get("ativo", p.get("symbol", "EURUSD"))).upper()
     direcao = _normalize_direction(str(p.get("acao", p.get("direcao", "CALL"))))
     tf = str(p.get("timeframe", p.get("tempo", "1"))).strip()
-    preco = p.get("preco", p.get("price", ""))
     strategy = str(p.get("strategy", p.get("estrategia", "Zmaximus V9"))).strip()
     countdown = int(p.get("countdown", DEFAULT_COUNTDOWN))
     broker = str(p.get("broker", p.get("corretora", "IQ Option"))).strip()
     ts = _now_local().strftime("%d/%m %H:%M:%S")
 
     label = "🔥 <b>SINAL PREMIUM</b>" if (score is not None and score >= 80) else "📌 <b>SINAL</b>"
-    mg_text = ""
     if current_mg_step < MARTINGALE_MAX:
         mg_text = f"\n{_emoji('🎯')} <b>MG1 (se loss):</b> R${stake*MARTINGALE_MULT:.0f}"
     else:
@@ -349,9 +347,6 @@ def _maybe_pause_on_target(now: datetime):
             f"✅ Bot pausado automaticamente.\n\n<b>{SIGNATURE}</b>"
         )
 
-# =========================
-# RESULT TRACKING (manual)
-# =========================
 def _apply_result(is_win: bool):
     global profit_est, wins, losses, consec_losses, current_mg_step, last_stake, PAUSED
     stake_used = last_stake
@@ -360,14 +355,12 @@ def _apply_result(is_win: bool):
         wins += 1
         consec_losses = 0
         profit_est += _profit_on_win(stake_used)
-        # reseta martingale
         current_mg_step = 0
         last_stake = BASE_STAKE
     else:
         losses += 1
         consec_losses += 1
         profit_est -= stake_used
-        # se ainda pode MG, sobe para próxima mão
         if current_mg_step < MARTINGALE_MAX:
             current_mg_step += 1
             last_stake = stake_used * MARTINGALE_MULT
@@ -375,7 +368,6 @@ def _apply_result(is_win: bool):
             current_mg_step = 0
             last_stake = BASE_STAKE
 
-    # pausas automáticas
     if consec_losses >= STOP_AFTER_CONSEC_LOSSES:
         PAUSED = True
         _enqueue_telegram(f"⛔ <b>BOT PAUSADO</b>\nMotivo: {consec_losses} losses seguidos.\n\n<b>{SIGNATURE}</b>")
@@ -384,9 +376,9 @@ def _apply_result(is_win: bool):
         _enqueue_telegram(f"⏸️ <b>PAUSA AUTOMÁTICA</b>\nMotivo: {consec_losses} losses seguidos.\nDuração: {PAUSE_MINUTES} min.\n\n<b>{SIGNATURE}</b>")
 
 # =========================
-# CORE WEBHOOK HANDLER
+# CORE TRADINGVIEW HANDLER
 # =========================
-def _handle_webhook() -> Tuple[Dict[str, Any], int]:
+def _handle_tv_webhook() -> Tuple[Dict[str, Any], int]:
     now = _now_local()
     _reset_day_if_needed(now)
 
@@ -394,11 +386,11 @@ def _handle_webhook() -> Tuple[Dict[str, Any], int]:
     if not payload:
         return {"status": "error", "message": "Payload vazio/ inválido."}, 200
 
-    sec = _require_secret(payload)
+    # ✅ valida secret só aqui
+    sec = _require_secret_for_tv(payload)
     if sec:
         return sec[0], 401
 
-    # horário
     if not _in_trading_window(now):
         return {"status": "ignored", "message": "blocked_by_time"}, 200
 
@@ -406,11 +398,9 @@ def _handle_webhook() -> Tuple[Dict[str, Any], int]:
     if paused:
         return {"status": "ignored", "message": f"paused:{why}"}, 200
 
-    # anti-spam
     if _is_duplicate(payload):
         return {"status": "ignored", "message": "duplicate"}, 200
 
-    # score opcional vindo do TradingView (0-100)
     score = None
     for k in ["score", "conf", "confidence"]:
         if k in payload:
@@ -420,18 +410,14 @@ def _handle_webhook() -> Tuple[Dict[str, Any], int]:
             except Exception:
                 pass
 
-    # modo ausente: só premium
-    if ABSENT_MODE:
-        if score is None or score < ABSENT_SCORE_MIN:
-            return {"status": "ignored", "message": "absent_mode_filtered"}, 200
+    if ABSENT_MODE and (score is None or score < ABSENT_SCORE_MIN):
+        return {"status": "ignored", "message": "absent_mode_filtered"}, 200
 
-    # stake sugerida
     stake = _suggest_stake(score)
 
-    # se estamos em MG, sugerir stake de MG
     global last_stake
     if current_mg_step > 0:
-        stake = last_stake  # já está multiplicado
+        stake = last_stake
 
     msg = _format_signal(payload, stake, score)
     _enqueue_telegram(msg)
@@ -448,28 +434,26 @@ def home():
 @app.get("/health")
 def health():
     return jsonify({"status": "ok"}), 200
-@app.post("/telegram")
-def webhook_telegram():
-    data, code = _handle_webhook()
-    return jsonify(data), code
-# aceitar POST em / também (evita erro de URL no TV)
-@app.post("/")
-def webhook_root():
-    data, code = _handle_webhook()
-    return jsonify(data), code
 
-@app.post("/webhook")
-def webhook():
-    data, code = _handle_webhook()
-    return jsonify(data), code
-
+# ✅ TradingView webhook (use este no Telegram setWebhook? NÃO — aqui é TradingView)
 @app.post("/tv")
 def tv():
-    data, code = _handle_webhook()
+    data, code = _handle_tv_webhook()
+    return jsonify(data), code
+
+# (opcionais para compatibilidade)
+@app.post("/webhook")
+def webhook():
+    data, code = _handle_tv_webhook()
+    return jsonify(data), code
+
+@app.post("/")
+def webhook_root():
+    data, code = _handle_tv_webhook()
     return jsonify(data), code
 
 # =========================
-# TELEGRAM WEBHOOK (commands)
+# TELEGRAM WEBHOOK (commands)  ✅ ESTE é o /telegram
 # =========================
 @app.post("/telegram")
 def telegram_webhook():
@@ -496,7 +480,19 @@ def telegram_webhook():
 
     cmd = text.split()[0].lower()
 
-    if cmd in ["/pause", "/pausar"]:
+    if cmd in ["/start", "/help", "/ajuda"]:
+        _enqueue_telegram(
+            "📌 <b>Comandos</b>\n"
+            "• /status\n"
+            "• /ausente_on | /ausente_off\n"
+            "• /pause | /resume\n"
+            "• /win | /loss (registrar resultado)\n"
+            "• /meta\n"
+            f"\n<b>{SIGNATURE}</b>",
+            str(chat_id),
+        )
+
+    elif cmd in ["/pause", "/pausar"]:
         PAUSED = True
         _enqueue_telegram("⏸️ <b>Bot pausado</b>\nUse /resume para voltar.", str(chat_id))
 
@@ -515,7 +511,6 @@ def telegram_webhook():
     elif cmd in ["/status"]:
         _enqueue_telegram(_format_status(now), str(chat_id))
 
-    # marcar resultado manualmente (para PnL real do dia)
     elif cmd in ["/win", "/w"]:
         _apply_result(True)
         _maybe_pause_on_target(now)
@@ -530,20 +525,8 @@ def telegram_webhook():
         tgt = daily_target if daily_target is not None else 0
         _enqueue_telegram(f"🎯 Meta do dia: <b>R${tgt:.0f}</b>\nLucro est.: <b>R${profit_est:.2f}</b>", str(chat_id))
 
-    elif cmd in ["/help", "/ajuda"]:
-        _enqueue_telegram(
-            "📌 <b>Comandos</b>\n"
-            "• /status\n"
-            "• /ausente_on | /ausente_off\n"
-            "• /pause | /resume\n"
-            "• /win | /loss (registrar resultado)\n"
-            "• /meta\n"
-            "\n<b>Obs:</b> /win e /loss ajustam MG e meta automaticamente.\n"
-            f"\n<b>{SIGNATURE}</b>",
-            str(chat_id),
-        )
     else:
-        _enqueue_telegram("Comandos: /status /ausente_on /ausente_off /pause /resume /win /loss /meta /help", str(chat_id))
+        _enqueue_telegram("Comandos: /start /status /ausente_on /ausente_off /pause /resume /win /loss /meta", str(chat_id))
 
     return jsonify({"ok": True})
 
