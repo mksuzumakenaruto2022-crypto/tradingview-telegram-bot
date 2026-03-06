@@ -419,13 +419,13 @@ def _handle_tv_webhook() -> Tuple[Dict[str, Any], int]:
     stake = _suggest_stake(score)
 
     global last_stake
-    if current_mg_step > 0:
-        stake = last_stake
+   if current_mg_step > 0:
+    stake = last_stake
 
-   msg = _format_signal(payload, stake, score)
-    ok, erro = _telegram_send_message(msg)
-    print("TELEGRAM SEND:", ok, erro, flush=True)
-    return {"status": "ok"}, 200
+        msg = _format_signal(payload, stake, score)
+        ok, erro = _telegram_send_message(msg)
+        print("TELEGRAM SEND:", ok, erro, flush=True)
+        return {"status": "ok"}, 200
 
 # =========================
 # ROUTES
