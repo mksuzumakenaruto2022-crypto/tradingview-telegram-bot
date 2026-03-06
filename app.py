@@ -423,8 +423,8 @@ def _handle_tv_webhook() -> Tuple[Dict[str, Any], int]:
         stake = last_stake
 
     msg = _format_signal(payload, stake, score)
-    _enqueue_telegram(msg)
-
+    ok, erro = _telegram_send_message(msg)
+print("TELEGRAM SEND:", ok, erro, flush=True)
     return {"status": "ok"}, 200
 
 # =========================
